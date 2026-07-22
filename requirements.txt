@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+firebase-admin
+google-cloud-firestore
+requests
+python-dotenv
+streamlit
