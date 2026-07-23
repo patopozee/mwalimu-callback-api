@@ -4,6 +4,15 @@ from datetime import datetime, timedelta, timezone
 
 app = FastAPI()
 
+@app.get("/")
+def health_check():
+    """
+    Standard health check endpoint ensuring Google Cloud 
+    can verify the application is fully online and responsive.
+    """
+    return {"status": "healthy", "service": "mwalimu-callback-api"}
+
+
 @app.post("/mpesa-callback")
 async def mpesa_callback(request: Request):
     try:
