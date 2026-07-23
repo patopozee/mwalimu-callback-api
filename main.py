@@ -1,168 +1,62 @@
 from fastapi import FastAPI, Request
-from firebase_init import db
-from datetime import datetime, timedelta
-import collections
+from firebase_init import db  # Dynamically pull your existing Firestore client instance
+from datetime import datetime, timedelta, timezone
 
 app = FastAPI()
 
-# Store the last 20 callbacks for debugging
-PAYMENT_AUDIT_LOGS = collections.deque(maxlen=20)
-
-
-# --------------------------------------------------
-# Health Check
-# --------------------------------------------------
-@app.get("/")
-async def home():
-    return {
-        "status": "Mwalimu Callback API Running"
-    }
-
-
-# --------------------------------------------------
-# Audit Endpoint
-# --------------------------------------------------
-@app.get("/mpesa-audit-vault")
-async def audit():
-    return list(PAYMENT_AUDIT_LOGS)
-
-
-# --------------------------------------------------
-# M-Pesa Callback Endpoint
-# --------------------------------------------------
 @app.post("/mpesa-callback")
 async def mpesa_callback(request: Request):
-
-    data = await request.json()
-
-    # Save raw callback for debugging
-    PAYMENT_AUDIT_LOGS.append({
-        "timestamp": datetime.utcnow().isoformat(),
-        "payload": data
-    })
-
+    try:
+        data = await request.json()
+    except Exception:
+        return {"ResponseCode": "1", "ResponseDesc": "Invalid JSON Payload"}
+    
     body = data.get("Body", {}).get("stkCallback", {})
-
     result_code = body.get("ResultCode")
+    checkout_request_id = body.get("CheckoutRequestID")
 
-    checkout_request_id = (
-        body.get("CheckoutRequestID")
-        or body.get("CheckoutRequestId")
-        or data.get("Body", {}).get("CheckoutRequestID")
-    )
-
-    # --------------------------------------------------
-    # Only process successful payments
-    # --------------------------------------------------
+    if not checkout_request_id:
+        return {"ResponseCode": "1", "ResponseDesc": "Missing CheckoutRequestID"}
+    
+    # Process successful payment signals
     if result_code == 0:
-
         metadata = body.get("CallbackMetadata", {}).get("Item", [])
 
-        metadata_dict = {
-            item.get("Name"): item.get("Value")
-            for item in metadata
-        }
-
-        phone = str(metadata_dict.get("PhoneNumber", ""))
-
-        mpesa_receipt = str(
-            metadata_dict.get("MpesaReceiptNumber", "UNKNOWN")
+        mpesa_receipt = next(
+            (str(item["Value"]) for item in metadata if item["Name"] == "MpesaReceiptNumber"),
+            "MPESA_REF"
         )
 
-        amount = metadata_dict.get("Amount")
-
-        print("=" * 60)
-        print("📥 CALLBACK RECEIVED")
-        print("CheckoutRequestID:", checkout_request_id)
-        print("Phone:", phone)
-        print("Receipt:", mpesa_receipt)
-        print("Amount:", amount)
-        print("=" * 60)
-
-        # ----------------------------------------------
-        # Validate CheckoutRequestID
-        # ----------------------------------------------
-        if not checkout_request_id:
-            print("❌ Callback missing CheckoutRequestID.")
-
-            return {
-                "ResponseCode": "0",
-                "ResponseDesc": "Accept Success"
-            }
-
-        # ----------------------------------------------
-        # Retrieve Pending Payment
-        # ----------------------------------------------
-        payment_doc = (
-            db.collection("pending_payments")
-            .document(checkout_request_id)
-            .get()
-        )
+        # Look up matching checkout session rows
+        payment_doc = db.collection("pending_payments").document(checkout_request_id).get()
 
         if not payment_doc.exists:
-            print(f"❌ Pending payment not found: {checkout_request_id}")
+            print(f"❌ Record mismatch: {checkout_request_id} not found in database.")
+            return {"ResponseCode": "0", "ResponseDesc": "Accept Success"}
 
-            return {
-                "ResponseCode": "0",
-                "ResponseDesc": "Accept Success"
-            }
-
-        payment = payment_doc.to_dict()
-
-        if payment is None:
-            print("❌ Pending payment document is empty.")
-
-            return {
-                "ResponseCode": "0",
-                "ResponseDesc": "Accept Success"
-            }
-
+        payment = payment_doc.to_dict() or {}
         uid = payment.get("uid")
         plan = payment.get("plan")
 
         if not uid or not plan:
-            print("❌ Pending payment missing uid or plan.")
+            return {"ResponseCode": "0", "ResponseDesc": "Accept Success"}
 
-            return {
-                "ResponseCode": "0",
-                "ResponseDesc": "Accept Success"
-            }
+        # Calculate a standard 30-day tier expiration timestamp
+        expiry = (datetime.now(timezone.utc) + timedelta(days=30)).strftime("%Y-%m-%d")
 
-        # ----------------------------------------------
-        # Upgrade Subscription
-        # ----------------------------------------------
-        expiry = (
-            datetime.utcnow() + timedelta(days=30)
-        ).strftime("%Y-%m-%d")
-
+        # Push subscription details directly to your user node
         db.collection("users").document(uid).update({
             "subscription": {
                 "tier": plan,
                 "expiry_date": expiry,
                 "payment_status": "Completed",
                 "reference_id": mpesa_receipt,
-                "updated_at": datetime.utcnow().isoformat()
+                "updated_at": datetime.now(timezone.utc).isoformat()
             }
         })
 
-        print(f"✅ Subscription upgraded to '{plan}'")
-
-        # ----------------------------------------------
-        # Remove Pending Payment
-        # ----------------------------------------------
-        db.collection("pending_payments") \
-            .document(checkout_request_id) \
-            .delete()
-
-        print(f"🗑 Pending payment deleted: {checkout_request_id}")
-
-    else:
-        print(f"❌ Payment failed. ResultCode={result_code}")
-
-    # --------------------------------------------------
-    # Always acknowledge Safaricom
-    # --------------------------------------------------
-    return {
-        "ResponseCode": "0",
-        "ResponseDesc": "Accept Success"
-    }
+        # Remove the processed document entry cleanly
+        db.collection("pending_payments").document(checkout_request_id).delete()
+        print(f"✅ Core Premium upgrade finalized for user account: {uid}")
+        
+    return {"ResponseCode": "0", "ResponseDesc": "Accept Success"}
