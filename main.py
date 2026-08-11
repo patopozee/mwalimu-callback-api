@@ -72,10 +72,8 @@ async def mpesa_callback(request: Request):
             elif name == "Amount":
                 amount_paid = val
 
-        # Normalize plan display text names for frontend
-        display_tier = (
-            "Mwalimu AI Plus" if "plus" in plan else "Premium"
-        )
+        # STRICT ENFORCEMENT: Set tier to strictly 'plus' or 'premium'
+        display_tier = "Plus" if "Plus" in plan else "Premium"
 
         start_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         expiry_date = (
