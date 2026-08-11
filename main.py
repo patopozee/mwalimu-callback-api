@@ -73,7 +73,7 @@ async def mpesa_callback(request: Request):
                 amount_paid = val
 
         # STRICT ENFORCEMENT: Set tier to strictly 'plus' or 'premium'
-        display_tier = "Plus" if "Plus" in plan else "Premium"
+        display_tier = "plus" if "plus" in plan else "premium"
 
         start_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         expiry_date = (
